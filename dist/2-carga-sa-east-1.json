@@ -1,0 +1,121 @@
+{
+ "AWSTemplateFormatVersion": "2010-09-09",
+ "Description": "SegurAlpes PoC - generador de carga k6 en sa-east-1 (simula usuarios en Suramerica). Acceso solo por Session Manager.",
+ "Parameters": {
+  "ApiUrl": {
+   "Type": "String",
+   "Description": "Salida ApiUrl de la pila principal"
+  },
+  "ApiKeyValue": {
+   "Type": "String",
+   "NoEcho": true,
+   "MinLength": 20
+  },
+  "TipoInstancia": {
+   "Type": "String",
+   "Default": "c6i.large"
+  },
+  "Ami": {
+   "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
+   "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+  }
+ },
+ "Resources": {
+  "Rol": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ec2.amazonaws.com"
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    ]
+   }
+  },
+  "Perfil": {
+   "Type": "AWS::IAM::InstanceProfile",
+   "Properties": {
+    "Roles": [
+     {
+      "Ref": "Rol"
+     }
+    ]
+   }
+  },
+  "GrupoSeguridad": {
+   "Type": "AWS::EC2::SecurityGroup",
+   "Properties": {
+    "GroupDescription": "Generador de carga: sin entrada, solo salida",
+    "SecurityGroupEgress": [
+     {
+      "IpProtocol": "-1",
+      "CidrIp": "0.0.0.0/0"
+     }
+    ]
+   }
+  },
+  "Generador": {
+   "Type": "AWS::EC2::Instance",
+   "Properties": {
+    "ImageId": {
+     "Ref": "Ami"
+    },
+    "InstanceType": {
+     "Ref": "TipoInstancia"
+    },
+    "IamInstanceProfile": {
+     "Ref": "Perfil"
+    },
+    "SecurityGroupIds": [
+     {
+      "Fn::GetAtt": [
+       "GrupoSeguridad",
+       "GroupId"
+      ]
+     }
+    ],
+    "InstanceInitiatedShutdownBehavior": "stop",
+    "Tags": [
+     {
+      "Key": "Name",
+      "Value": "segur-alpes-poc-carga"
+     }
+    ],
+    "UserData": {
+     "Fn::Base64": {
+      "Fn::Join": [
+       "",
+       [
+        "#!/bin/bash\nset -euo pipefail\nmkdir -p /opt/poc/pruebas /opt/poc/resultados /opt/poc/datos\ncat > /opt/poc/pruebas/comun.js <<'SEGUR_FIN'\n// Utilidades compartidas: multipart construido a mano para garantizar que \"file\" vaya de último (S3 lo exige).\nexport function ascii(s) {\n  const u = new Uint8Array(s.length);\n  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 0xff;\n  return u;\n}\n\nexport function multipart(campos, datos, nombre, tipo) {\n  const limite = '----segurAlpes' + Math.random().toString(16).slice(2);\n  let cab = '';\n  for (const k of Object.keys(campos)) {\n    cab += `--${limite}\\r\\nContent-Disposition: form-data; name=\"${k}\"\\r\\n\\r\\n${campos[k]}\\r\\n`;\n  }\n  cab += `--${limite}\\r\\nContent-Disposition: form-data; name=\"file\"; filename=\"${nombre}\"\\r\\nContent-Type: ${tipo}\\r\\n\\r\\n`;\n  const a = ascii(cab);\n  const b = new Uint8Array(datos);\n  const c = ascii(`\\r\\n--${limite}--\\r\\n`);\n  const out = new Uint8Array(a.length + b.length + c.length);\n  out.set(a, 0); out.set(b, a.length); out.set(c, a.length + b.length);\n  return { cuerpo: out.buffer, tipo: `multipart/form-data; boundary=${limite}` };\n}\n\nexport function p(m, k) {\n  return m && m.values && m.values[k] !== undefined ? m.values[k].toFixed(0) : '-';\n}\n\nSEGUR_FIN\ncat > /opt/poc/pruebas/carga.js <<'SEGUR_FIN'\n// ASR-3: carga de evidencias de 5 MB con URL prefirmada.\n// ESCENARIO=individual (1 usuario, 20 cargas seguidas) o pico (50 usuarios simultáneos, 4 cargas cada uno).\nimport http from 'k6/http';\nimport { check } from 'k6';\nimport { Trend, Rate, Counter } from 'k6/metrics';\nimport { multipart, p } from './comun.js';\n\nconst API = __ENV.API_URL;\nconst KEY = __ENV.API_KEY;\nconst ESC = __ENV.ESCENARIO || 'pico';\nconst ARCHIVO = open(__ENV.ARCHIVO || '/opt/poc/datos/evidencia_5mb.jpg', 'b');\n\nconst urlMs = new Trend('url_ms', true);\nconst cargaMs = new Trend('carga_ms', true);\nconst totalMs = new Trend('total_ms', true);\nconst fallas = new Rate('fallas');\nconst subidas = new Counter('subidas_ok');\n\nconst ESCENARIOS = {\n  individual: { executor: 'per-vu-iterations', vus: 1, iterations: 20, maxDuration: '10m' },\n  pico: { executor: 'per-vu-iterations', vus: 50, iterations: 4, maxDuration: '10m' },\n};\n\nexport const options = {\n  scenarios: { [ESC]: ESCENARIOS[ESC] },\n  thresholds: {\n    url_ms: ['p(95)<300'],\n    carga_ms: ['p(95)<3000'],\n    fallas: ['rate==0'],\n  },\n  summaryTrendStats: ['min', 'med', 'p(90)', 'p(95)', 'max'],\n};\n\nexport default function () {\n  const t0 = Date.now();\n  const r1 = http.post(API, JSON.stringify({ siniestro: `SIN${__VU}x${__ITER}`, tipo: 'image/jpeg' }), {\n    headers: { 'Content-Type': 'application/json', 'x-api-key': KEY },\n    tags: { paso: 'url' },\n  });\n  const t1 = Date.now();\n  urlMs.add(t1 - t0);\n  if (!check(r1, { 'URL emitida (201)': (r) => r.status === 201 })) {\n    fallas.add(1);\n    return;\n  }\n  const d = r1.json();\n  const m = multipart(d.campos, ARCHIVO, 'evidencia.jpg', 'image/jpeg');\n  const r2 = http.post(d.url, m.cuerpo, { headers: { 'Content-Type': m.tipo }, tags: { paso: 'carga' }, timeout: '60s' });\n  const t2 = Date.now();\n  cargaMs.add(t2 - t1);\n  totalMs.add(t2 - t0);\n  const ok = check(r2, { 'archivo cargado (204)': (r) => r.status === 204 });\n  fallas.add(!ok);\n  if (ok) subidas.add(1);\n}\n\nexport function handleSummary(data) {\n  const M = data.metrics;\n  const n = M.subidas_ok ? M.subidas_ok.values.count : 0;\n  const tasa = M.fallas ? (M.fallas.values.rate * 100).toFixed(2) : '-';\n  const cumple = (k) => (M[k] && M[k].thresholds && Object.values(M[k].thresholds).every((t) => t.ok) ? 'CUMPLE' : 'NO CUMPLE');\n  const txt = [\n    `\\nASR-3 · escenario ${ESC} · ${new Date().toISOString()}`,\n    `Cargas exitosas: ${n} · fallas: ${tasa} %`,\n    `URL prefirmada (ms)  p50 ${p(M.url_ms, 'med')}  p95 ${p(M.url_ms, 'p(95)')}  max ${p(M.url_ms, 'max')}  -> meta p95 < 300   ${cumple('url_ms')}`,\n    `Carga de 5 MB (ms)   p50 ${p(M.carga_ms, 'med')}  p95 ${p(M.carga_ms, 'p(95)')}  max ${p(M.carga_ms, 'max')}  -> meta p95 < 3000  ${cumple('carga_ms')}`,\n    `Total por evidencia  p50 ${p(M.total_ms, 'med')}  p95 ${p(M.total_ms, 'p(95)')}  max ${p(M.total_ms, 'max')}`,\n    '',\n  ].join('\\n');\n  const out = { stdout: txt };\n  out[`${__ENV.RESULTADOS || '/opt/poc/resultados'}/carga-${ESC}.json`] = JSON.stringify(data, null, 1);\n  return out;\n}\n\nSEGUR_FIN\ncat > /opt/poc/pruebas/seguridad.js <<'SEGUR_FIN'\n// ASR-4: intentos no autorizados contra el servicio de documentos y el almacenamiento. Un solo usuario, en orden.\nimport http from 'k6/http';\nimport { check, sleep } from 'k6';\nimport { multipart } from './comun.js';\n\nconst API = __ENV.API_URL;\nconst KEY = __ENV.API_KEY;\nconst DIR = __ENV.DATOS || '/opt/poc/datos';\nconst PEQ = open(`${DIR}/evidencia_100kb.jpg`, 'b');\nconst GRANDE = open(`${DIR}/evidencia_11mb.jpg`, 'b');\nconst DISFRAZ = open(`${DIR}/ejecutable_disfrazado.jpg`, 'b');\n\nexport const options = { vus: 1, iterations: 1, thresholds: { checks: ['rate==1'] } };\n\nfunction pedirUrl(tipo, conLlave = true) {\n  const h = { 'Content-Type': 'application/json' };\n  if (conLlave) h['x-api-key'] = KEY;\n  return http.post(API, JSON.stringify({ siniestro: 'SEG1', tipo }), { headers: h });\n}\n\nfunction subir(d, datos, tipo, campos) {\n  const m = multipart(campos || d.campos, datos, 'evidencia.jpg', tipo);\n  return http.post(d.url, m.cuerpo, { headers: { 'Content-Type': m.tipo } });\n}\n\nexport default function () {\n  const res = [];\n  const prueba = (nombre, esperado, r) => {\n    const ok = check(r, { [nombre]: (x) => x.status === esperado });\n    res.push(`${ok ? 'OK ' : 'FALLA'}  ${nombre}: esperado ${esperado}, obtenido ${r.status}`);\n  };\n\n  // 0. Control: una carga legítima debe funcionar\n  const base = pedirUrl('image/jpeg').json();\n  prueba('control: carga legítima', 204, subir(base, PEQ, 'image/jpeg'));\n  const host = base.url;\n  const llaveSubida = base.llave;\n\n  // 1. Pedir URL sin llave de API\n  prueba('URL sin llave de API', 403, pedirUrl('image/jpeg', false));\n  // 2. Tipo de archivo no permitido\n  prueba('tipo no permitido (ejecutable)', 400, pedirUrl('application/x-msdownload'));\n  // 3. Firma alterada: se cambia la llave del objeto\n  const d3 = pedirUrl('image/jpeg').json();\n  const c3 = Object.assign({}, d3.campos, { key: 'entrantes/OTRO/sobrescribir.jpg' });\n  prueba('firma alterada (otra llave)', 403, subir(d3, PEQ, 'image/jpeg', c3));\n  // 4. Tipo declarado distinto al firmado\n  const d4 = pedirUrl('image/jpeg').json();\n  const c4 = Object.assign({}, d4.campos, { 'Content-Type': 'text/html' });\n  prueba('tipo alterado (text/html)', 403, subir(d4, PEQ, 'text/html', c4));\n  // 5. Archivo más grande que el límite firmado\n  prueba('tamaño excedido (11 MB)', 400, subir(pedirUrl('image/jpeg').json(), GRANDE, 'image/jpeg'));\n  // 6. Escritura directa sin firma\n  prueba('PUT directo sin firma', 403, http.put(`${host}entrantes/SEG1/directo.jpg`, PEQ, { headers: { 'Content-Type': 'image/jpeg' } }));\n  // 7. Lectura sin firma del archivo legítimo\n  prueba('lectura sin firma', 403, http.get(`${host}${llaveSubida}`));\n  // 8. Contenido disfrazado: S3 lo acepta, la función debe ponerlo en cuarentena (verificar en los registros)\n  const d8 = pedirUrl('image/jpeg').json();\n  prueba('ejecutable disfrazado de JPEG (aceptado por S3)', 204, subir(d8, DISFRAZ, 'image/jpeg'));\n  res.push(`      -> buscar en los registros el evento DocumentoRechazado de ${d8.llave}`);\n  // 9. URL vencida\n  const d9 = pedirUrl('image/jpeg').json();\n  sleep(d9.vence_en_s + 5);\n  prueba(`URL vencida (${d9.vence_en_s + 5} s después)`, 403, subir(d9, PEQ, 'image/jpeg'));\n\n  console.log('\\nASR-4 · intentos no autorizados\\n' + res.join('\\n'));\n}\n\nSEGUR_FIN\ncat > /opt/poc/pruebas/generar_archivos.sh <<'SEGUR_FIN'\n#!/usr/bin/env bash\n# Crea los archivos de prueba: JPEG de 5 MB, 100 KB y 11 MB (cabecera JPEG real + bytes aleatorios) y un ejecutable disfrazado.\nset -euo pipefail\nDIR=\"${1:-/opt/poc/datos}\"; mkdir -p \"$DIR\"\njpeg() { { printf '\\xff\\xd8\\xff\\xe0'; head -c $(( $2 - 4 )) /dev/urandom; } > \"$DIR/$1\"; }\njpeg evidencia_5mb.jpg 5242880\njpeg evidencia_100kb.jpg 102400\njpeg evidencia_11mb.jpg 11534336\n{ printf 'MZ\\x90\\x00'; head -c 102396 /dev/urandom; } > \"$DIR/ejecutable_disfrazado.jpg\"\nls -l \"$DIR\"\n\nSEGUR_FIN\ncat > /opt/poc/correr.sh <<'SEGUR_FIN'\n#!/bin/bash\n# Uso: sudo /opt/poc/correr.sh individual | pico | seguridad\nset -euo pipefail\nsource /opt/poc/env\ncd /opt/poc/pruebas\ncase \"${1:-}\" in\n  individual|pico) k6 run --log-format raw -e ESCENARIO=\"$1\" -e API_URL=\"$API_URL\" -e API_KEY=\"$API_KEY\" carga.js ;;\n  seguridad) k6 run --log-format raw -e API_URL=\"$API_URL\" -e API_KEY=\"$API_KEY\" seguridad.js ;;\n  *) echo \"uso: $0 individual|pico|seguridad\"; exit 1 ;;\nesac\n\nSEGUR_FIN\nchmod +x /opt/poc/correr.sh /opt/poc/pruebas/generar_archivos.sh\ncurl -sSL https://github.com/grafana/k6/releases/download/v0.54.0/k6-v0.54.0-linux-amd64.tar.gz | tar xz -C /tmp\ninstall /tmp/k6-v0.54.0-linux-amd64/k6 /usr/local/bin/k6\n/opt/poc/pruebas/generar_archivos.sh /opt/poc/datos\nprintf 'API_URL=%s\\nAPI_KEY=%s\\n' \"",
+        {
+         "Ref": "ApiUrl"
+        },
+        "\" \"",
+        {
+         "Ref": "ApiKeyValue"
+        },
+        "\" > /opt/poc/env\nchmod 600 /opt/poc/env\n# apagado automático a las 4 horas para no dejar costos encendidos\nshutdown -h +240 || true\necho LISTO > /opt/poc/estado\n"
+       ]
+      ]
+     }
+    }
+   }
+  }
+ },
+ "Outputs": {
+  "Instancia": {
+   "Value": {
+    "Ref": "Generador"
+   }
+  }
+ }
+}

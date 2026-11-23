@@ -1,0 +1,430 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  SegurAlpes PoC (ASR-3 y ASR-4) - carga de evidencias con URL prefirmada. Region us-east-1.
+  API Gateway con llave por aliado, Lambda que emite la URL, S3 cifrado con KMS y sin acceso publico,
+  funcion que valida cada archivo y publica el evento en EventBridge, CloudTrail y registros de acceso.
+
+Parameters:
+  ApiKeyValue:
+    Type: String
+    NoEcho: true
+    MinLength: 20
+    Description: Llave de API del aliado de prueba (minimo 20 caracteres).
+  VigenciaUrlSegundos:
+    Type: Number
+    Default: 60
+    MinValue: 10
+    MaxValue: 900
+    Description: Vigencia de la URL prefirmada.
+  TamanoMaximoBytes:
+    Type: Number
+    Default: 10485760
+    Description: Tamano maximo de una evidencia (10 MB).
+
+Resources:
+  # ------------------------------------------------------------ cifrado
+  LlaveDocumentos:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: SegurAlpes PoC - cifrado de evidencias
+      EnableKeyRotation: true
+      PendingWindowInDays: 7
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Administracion por IAM de la cuenta
+            Effect: Allow
+            Principal: { AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root" }
+            Action: "kms:*"
+            Resource: "*"
+
+  # ------------------------------------------------------------ auditoria
+  BucketAuditoria:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "segur-alpes-poc-auditoria-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      LifecycleConfiguration:
+        Rules: [{ Id: limpieza, Status: Enabled, ExpirationInDays: 7 }]
+
+  PoliticaBucketAuditoria:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BucketAuditoria
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudTrailAcl
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt BucketAuditoria.Arn
+          - Sid: CloudTrailEscritura
+            Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub "${BucketAuditoria.Arn}/cloudtrail/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                "s3:x-amz-acl": bucket-owner-full-control
+                "aws:SourceArn": !Sub "arn:aws:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/segur-alpes-poc"
+          - Sid: RegistrosDeAccesoS3
+            Effect: Allow
+            Principal: { Service: logging.s3.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub "${BucketAuditoria.Arn}/s3-acceso/*"
+            Condition:
+              StringEquals: { "aws:SourceAccount": !Ref "AWS::AccountId" }
+
+  GrupoLogsTrail:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /segur-alpes-poc/cloudtrail
+      RetentionInDays: 7
+
+  RolTrailLogs:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudtrail.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: escribir-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${GrupoLogsTrail.Arn}"
+
+  Trail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: PoliticaBucketAuditoria
+    Properties:
+      TrailName: segur-alpes-poc
+      IsLogging: true
+      S3BucketName: !Ref BucketAuditoria
+      S3KeyPrefix: cloudtrail
+      CloudWatchLogsLogGroupArn: !GetAtt GrupoLogsTrail.Arn
+      CloudWatchLogsRoleArn: !GetAtt RolTrailLogs.Arn
+      AdvancedEventSelectors:
+        - Name: Eventos de datos del bucket de evidencias
+          FieldSelectors:
+            - Field: eventCategory
+              Equals: [Data]
+            - Field: resources.type
+              Equals: ["AWS::S3::Object"]
+            - Field: resources.ARN
+              StartsWith: [!Sub "arn:aws:s3:::segur-alpes-poc-evidencias-${AWS::AccountId}/"]
+
+  # ------------------------------------------------------------ almacenamiento de evidencias
+  BucketEvidencias:
+    Type: AWS::S3::Bucket
+    DependsOn: [PermisoS3Validar, PoliticaBucketAuditoria]
+    Properties:
+      BucketName: !Sub "segur-alpes-poc-evidencias-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt LlaveDocumentos.Arn
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      VersioningConfiguration: { Status: Enabled }
+      LoggingConfiguration:
+        DestinationBucketName: !Ref BucketAuditoria
+        LogFilePrefix: s3-acceso/
+      LifecycleConfiguration:
+        Rules:
+          - Id: limpieza-poc
+            Status: Enabled
+            ExpirationInDays: 3
+            NoncurrentVersionExpiration: { NoncurrentDays: 1 }
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt FuncionValidar.Arn
+            Filter:
+              S3Key:
+                Rules: [{ Name: prefix, Value: entrantes/ }]
+
+  PoliticaBucketEvidencias:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BucketEvidencias
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SoloTLS
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource: [!GetAtt BucketEvidencias.Arn, !Sub "${BucketEvidencias.Arn}/*"]
+            Condition: { Bool: { "aws:SecureTransport": "false" } }
+
+  # ------------------------------------------------------------ eventos
+  BusEventos:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: segur-alpes-poc
+
+  GrupoLogsEventos:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/events/segur-alpes-poc
+      RetentionInDays: 7
+
+  PoliticaLogsEventos:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: segur-alpes-poc-eventos
+      PolicyDocument: !Sub >-
+        {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+        "Principal":{"Service":["events.amazonaws.com","delivery.logs.amazonaws.com"]},
+        "Action":["logs:CreateLogStream","logs:PutLogEvents"],"Resource":"${GrupoLogsEventos.Arn}"}]}
+
+  ReglaDocumentos:
+    Type: AWS::Events::Rule
+    DependsOn: PoliticaLogsEventos
+    Properties:
+      EventBusName: !Ref BusEventos
+      EventPattern:
+        source: [segur-alpes.documentos]
+      Targets:
+        - Id: registro
+          Arn: !GetAtt GrupoLogsEventos.Arn
+
+  # ------------------------------------------------------------ funcion que valida cada archivo
+  GrupoLogsValidar:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/segur-alpes-poc-validar
+      RetentionInDays: 7
+
+  RolValidar:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: validar-evidencias
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:PutObjectTagging, s3:DeleteObject]
+                Resource: !Sub "arn:aws:s3:::segur-alpes-poc-evidencias-${AWS::AccountId}/*"
+              - Effect: Allow
+                Action: [kms:Decrypt, kms:GenerateDataKey]
+                Resource: !GetAtt LlaveDocumentos.Arn
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !GetAtt BusEventos.Arn
+
+  FuncionValidar:
+    Type: AWS::Lambda::Function
+    DependsOn: GrupoLogsValidar
+    Properties:
+      FunctionName: segur-alpes-poc-validar
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt RolValidar.Arn
+      Environment:
+        Variables:
+          BUS: !Ref BusEventos
+      Code:
+        ZipFile: |
+@@VALIDAR@@
+
+  PermisoS3Validar:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FuncionValidar
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !Sub "arn:aws:s3:::segur-alpes-poc-evidencias-${AWS::AccountId}"
+
+  # ------------------------------------------------------------ servicio de documentos (emite la URL prefirmada)
+  GrupoLogsEmitir:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/segur-alpes-poc-emitir-url
+      RetentionInDays: 7
+
+  RolEmitir:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole]
+      Policies:
+        - PolicyName: firmar-cargas
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "arn:aws:s3:::segur-alpes-poc-evidencias-${AWS::AccountId}/entrantes/*"
+              - Effect: Allow
+                Action: kms:GenerateDataKey
+                Resource: !GetAtt LlaveDocumentos.Arn
+
+  FuncionEmitirUrl:
+    Type: AWS::Lambda::Function
+    DependsOn: GrupoLogsEmitir
+    Properties:
+      FunctionName: segur-alpes-poc-emitir-url
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 10
+      MemorySize: 512
+      Role: !GetAtt RolEmitir.Arn
+      Environment:
+        Variables:
+          BUCKET: !Sub "segur-alpes-poc-evidencias-${AWS::AccountId}"
+          VIGENCIA_S: !Ref VigenciaUrlSegundos
+          MAX_BYTES: !Ref TamanoMaximoBytes
+      Code:
+        ZipFile: |
+@@EMITIR@@
+
+  # ------------------------------------------------------------ API Gateway con llave por aliado
+  Api:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: segur-alpes-poc
+      EndpointConfiguration: { Types: [REGIONAL] }
+
+  RecursoDocumentos:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: documentos
+
+  RecursoUrl:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref RecursoDocumentos
+      PathPart: url
+
+  MetodoUrl:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref RecursoUrl
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FuncionEmitirUrl.Arn}/invocations"
+
+  PermisoApiEmitir:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FuncionEmitirUrl
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*/POST/documentos/url"
+
+  Despliegue:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: MetodoUrl
+    Properties:
+      RestApiId: !Ref Api
+
+  Etapa:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref Api
+      DeploymentId: !Ref Despliegue
+      StageName: poc
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          MetricsEnabled: true
+
+  PlanDeUso:
+    Type: AWS::ApiGateway::UsagePlan
+    DependsOn: Etapa
+    Properties:
+      UsagePlanName: segur-alpes-poc-aliado
+      ApiStages: [{ ApiId: !Ref Api, Stage: poc }]
+      Throttle: { RateLimit: 200, BurstLimit: 400 }
+
+  LlaveApi:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: segur-alpes-poc-aliado-prueba
+      Enabled: true
+      Value: !Ref ApiKeyValue
+
+  LlaveEnPlan:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref LlaveApi
+      KeyType: API_KEY
+      UsagePlanId: !Ref PlanDeUso
+
+  # ------------------------------------------------------------ tablero para la evidencia
+  Tablero:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: segur-alpes-poc
+      DashboardBody: !Sub |
+        {"widgets":[
+         {"type":"metric","x":0,"y":0,"width":12,"height":6,"properties":{"title":"Emision de la URL prefirmada: latencia del API Gateway (ms)","region":"${AWS::Region}","stat":"p95","period":60,"view":"timeSeries",
+          "metrics":[["AWS/ApiGateway","Latency","ApiName","segur-alpes-poc","Stage","poc",{"label":"p95"}],["...",{"stat":"p50","label":"p50"}]],
+          "annotations":{"horizontal":[{"label":"meta p95 300 ms","value":300}]}}},
+         {"type":"metric","x":12,"y":0,"width":12,"height":6,"properties":{"title":"Evento publicado despues de la carga (ms)","region":"${AWS::Region}","stat":"p95","period":60,"view":"timeSeries",
+          "metrics":[["SegurAlpesPoC","LatenciaEventoMs","Resultado","validado",{"label":"validado p95"}],[".",".",".","rechazado",{"label":"rechazado p95"}]],
+          "annotations":{"horizontal":[{"label":"meta 10 s","value":10000}]}}},
+         {"type":"metric","x":0,"y":6,"width":12,"height":6,"properties":{"title":"Archivos procesados por la funcion","region":"${AWS::Region}","stat":"SampleCount","period":60,"view":"timeSeries",
+          "metrics":[["SegurAlpesPoC","LatenciaEventoMs","Resultado","validado"],[".",".",".","rechazado"]]}},
+         {"type":"metric","x":12,"y":6,"width":12,"height":6,"properties":{"title":"Solicitudes y errores del API Gateway","region":"${AWS::Region}","stat":"Sum","period":60,"view":"timeSeries",
+          "metrics":[["AWS/ApiGateway","Count","ApiName","segur-alpes-poc","Stage","poc"],[".","4XXError",".",".",".","."],[".","5XXError",".",".",".","."]]}}
+        ]}
+
+Outputs:
+  ApiUrl:
+    Description: Endpoint para pedir la URL prefirmada
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/poc/documentos/url"
+  BucketEvidencias:
+    Value: !Ref BucketEvidencias
+  BucketAuditoria:
+    Value: !Ref BucketAuditoria
+  Tablero:
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=segur-alpes-poc"
