@@ -43,7 +43,7 @@ def handler(event, context):
             S3.copy_object(Bucket=bucket, Key=destino, CopySource={"Bucket": bucket, "Key": llave})
             S3.delete_object(Bucket=bucket, Key=llave)
             tipo_evento = "DocumentoRechazado"
-        EVENTOS.put_entries(Entries=[{
+        EVENTOS.put_events(Entries=[{
             "EventBusName": BUS, "Source": "segur-alpes.documentos", "DetailType": tipo_evento,
             "Detail": json.dumps({"llave": destino, "bytes": tamano, "tipo_declarado": declarado, "tipo_real": real})}])
         creado = datetime.fromisoformat(reg["eventTime"].replace("Z", "+00:00")).timestamp()

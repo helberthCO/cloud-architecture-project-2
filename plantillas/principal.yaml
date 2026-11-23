@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  SegurAlpes PoC (ASR-3 y ASR-4) - carga de evidencias con URL prefirmada. Region us-east-1.
+  SegurAlpes PoC (ASR-3 y ASR-4) - carga de evidencias con URL prefirmada. Se despliega en la region del proyecto (us-east-2).
   API Gateway con llave por aliado, Lambda que emite la URL, S3 cifrado con KMS y sin acceso publico,
   funcion que valida cada archivo y publica el evento en EventBridge, CloudTrail y registros de acceso.
 

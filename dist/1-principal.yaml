@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  SegurAlpes PoC (ASR-3 y ASR-4) - carga de evidencias con URL prefirmada. Region us-east-1.
+  SegurAlpes PoC (ASR-3 y ASR-4) - carga de evidencias con URL prefirmada. Se despliega en la region del proyecto (us-east-2).
   API Gateway con llave por aliado, Lambda que emite la URL, S3 cifrado con KMS y sin acceso publico,
   funcion que valida cada archivo y publica el evento en EventBridge, CloudTrail y registros de acceso.
 
@@ -304,7 +304,7 @@ Resources:
                       S3.copy_object(Bucket=bucket, Key=destino, CopySource={"Bucket": bucket, "Key": llave})
                       S3.delete_object(Bucket=bucket, Key=llave)
                       tipo_evento = "DocumentoRechazado"
-                  EVENTOS.put_entries(Entries=[{
+                  EVENTOS.put_events(Entries=[{
                       "EventBusName": BUS, "Source": "segur-alpes.documentos", "DetailType": tipo_evento,
                       "Detail": json.dumps({"llave": destino, "bytes": tamano, "tipo_declarado": declarado, "tipo_real": real})}])
                   creado = datetime.fromisoformat(reg["eventTime"].replace("Z", "+00:00")).timestamp()
@@ -370,7 +370,9 @@ Resources:
           import boto3
           from botocore.config import Config
 
-          S3 = boto3.client("s3", config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
+          REGION = os.environ["AWS_REGION"]
+          S3 = boto3.client("s3", region_name=REGION, endpoint_url=f"https://s3.{REGION}.amazonaws.com",
+                            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
           BUCKET = os.environ["BUCKET"]
           VIGENCIA = int(os.environ.get("VIGENCIA_S", "60"))
           MAX_BYTES = int(os.environ.get("MAX_BYTES", "10485760"))

@@ -3,7 +3,9 @@ import json, os, uuid
 import boto3
 from botocore.config import Config
 
-S3 = boto3.client("s3", config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
+REGION = os.environ["AWS_REGION"]
+S3 = boto3.client("s3", region_name=REGION, endpoint_url=f"https://s3.{REGION}.amazonaws.com",
+                  config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
 BUCKET = os.environ["BUCKET"]
 VIGENCIA = int(os.environ.get("VIGENCIA_S", "60"))
 MAX_BYTES = int(os.environ.get("MAX_BYTES", "10485760"))

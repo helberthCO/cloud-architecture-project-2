@@ -23,8 +23,10 @@ Los dos dependen de la misma decisión, la carga directa con URL prefirmada (pat
 
 | Pila | Región | Contenido |
 |---|---|---|
-| `segur-alpes-poc` | us-east-1 | API Gateway REST con llave de API y plan de uso por aliado · Lambda que emite la URL prefirmada POST (60 s de vigencia, tipo de archivo fijo, máximo 10 MB) · S3 cifrado con una llave de AWS KMS, sin acceso público, con versionado y solo TLS · Lambda que valida la firma binaria de cada archivo y publica `DocumentoCargado` o `DocumentoRechazado` en Amazon EventBridge · AWS CloudTrail con eventos de datos del bucket · registros de acceso del servidor de S3 · tablero de Amazon CloudWatch |
-| `segur-alpes-poc-carga` | sa-east-1 | Instancia EC2 con k6 que simula usuarios en Suramérica. Sin puertos abiertos: acceso por Session Manager. Se apaga sola a las 4 horas |
+| `segur-alpes-poc` | us-east-2 | API Gateway REST con llave de API y plan de uso por aliado · Lambda que emite la URL prefirmada POST (60 s de vigencia, tipo de archivo fijo, máximo 10 MB) · S3 cifrado con una llave de AWS KMS, sin acceso público, con versionado y solo TLS · Lambda que valida la firma binaria de cada archivo y publica `DocumentoCargado` o `DocumentoRechazado` en Amazon EventBridge · AWS CloudTrail con eventos de datos del bucket · registros de acceso del servidor de S3 · tablero de Amazon CloudWatch |
+| `segur-alpes-poc-carga` | us-east-2 | Instancia EC2 con k6 que genera la concurrencia (50 usuarios simultáneos). Sin puertos abiertos: acceso por Session Manager. Se apaga sola a las 4 horas |
+
+La cuenta usa la experiencia nueva de AWS, que asigna una sola región por proyecto (us-east-2) y no permite recursos en otras regiones; por eso las dos pilas van en la misma región, y la distancia de red real se mide con la prueba desde una conexión residencial en Bogotá. El blueprint de la arquitectura usa us-east-1; los servicios son los mismos.
 
 Diferencias con la arquitectura completa: la URL la emite una Lambda y no el servicio de documentos en Kubernetes (el ASR mide la carga directa, que no pasa por ese cómputo); no hay CDN ni WAF delante del API; el bucket no tiene bloqueo de escritura única, para poder borrar la prueba; la infraestructura se define en CloudFormation para desplegarla sin instalar herramientas.
 
@@ -43,26 +45,28 @@ Diferencias con la arquitectura completa: la URL la emite una Lambda y no el ser
 
 ## Cómo desplegarla
 
-Requisitos: cuenta de AWS con permisos de administrador y AWS CLI v2 configurada (también se puede hacer desde la consola web cargando las plantillas de `dist/`). Costo estimado: menos de USD 5 si se borra el mismo día.
+Desde la consola web: en CloudFormation, **Create stack** → **Upload a template file** con `dist/1-principal.yaml` (parámetro `ApiKeyValue`), marcar la casilla de recursos de IAM y copiar `ApiUrl` de **Outputs**; después lo mismo con `dist/2-generador-carga.json` (parámetros `ApiUrl` y `ApiKeyValue`). Costo estimado: menos de USD 5 si se borra el mismo día.
+
+Con la AWS CLI v2:
 
 ```bash
 # 1. Llave de API del aliado de prueba
 export API_KEY=$(openssl rand -hex 20)
 
-# 2. Pila principal en us-east-1
-aws cloudformation deploy --region us-east-1 --stack-name segur-alpes-poc \
-  --template-file dist/1-principal-us-east-1.yaml --capabilities CAPABILITY_IAM \
+# 2. Pila principal
+aws cloudformation deploy --region us-east-2 --stack-name segur-alpes-poc \
+  --template-file dist/1-principal.yaml --capabilities CAPABILITY_IAM \
   --parameter-overrides ApiKeyValue=$API_KEY
-export API_URL=$(aws cloudformation describe-stacks --region us-east-1 --stack-name segur-alpes-poc \
+export API_URL=$(aws cloudformation describe-stacks --region us-east-2 --stack-name segur-alpes-poc \
   --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
 
 # 3. Prueba rápida: debe responder 201 con url, campos, llave y vence_en_s
 curl -s -X POST "$API_URL" -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"siniestro":"PRUEBA1","tipo":"image/jpeg"}'
 
-# 4. Generador de carga en sa-east-1 (si no hay VPC por defecto: aws ec2 create-default-vpc --region sa-east-1)
-aws cloudformation deploy --region sa-east-1 --stack-name segur-alpes-poc-carga \
-  --template-file dist/2-carga-sa-east-1.json --capabilities CAPABILITY_IAM \
+# 4. Generador de carga (si no hay VPC por defecto: aws ec2 create-default-vpc --region us-east-2)
+aws cloudformation deploy --region us-east-2 --stack-name segur-alpes-poc-carga \
+  --template-file dist/2-generador-carga.json --capabilities CAPABILITY_IAM \
   --parameter-overrides ApiUrl=$API_URL ApiKeyValue=$API_KEY
 ```
 
@@ -76,7 +80,7 @@ sudo /opt/poc/correr.sh pico         # 50 usuarios simultáneos, 4 cargas cada u
 sudo /opt/poc/correr.sh seguridad    # 8 intentos no autorizados, 1 archivo disfrazado y 1 control
 ```
 
-Desde la red del usuario:
+Desde la red del usuario (la medición de la red real):
 
 ```bash
 bash pruebas/generar_archivos.sh ./datos
@@ -91,8 +95,8 @@ Pruebas sin AWS: `cd pruebas_locales && python3 test_lambdas.py`.
 
 | Prueba | URL p95 (meta < 300 ms) | Carga p95 (meta < 3 s) | Fallas | Cumple |
 |---|---|---|---|---|
-| Individual (sa-east-1) | — | — | — | — |
-| Pico, 50 usuarios (sa-east-1) | — | — | — | — |
+| Individual (generador en us-east-2) | — | — | — | — |
+| Pico, 50 usuarios (generador en us-east-2) | — | — | — | — |
 | Red residencial (Bogotá) | — | — | — | — |
 
 | Medida | Resultado | Cumple |
@@ -106,6 +110,6 @@ Video de la prueba: *pendiente*.
 
 ## Borrar todo
 
-1. Borrar la pila `segur-alpes-poc-carga` en sa-east-1.
+1. Borrar la pila `segur-alpes-poc-carga`.
 2. Vaciar en la consola de S3 los buckets `segur-alpes-poc-evidencias-<cuenta>` y `segur-alpes-poc-auditoria-<cuenta>` (el vaciado de la consola borra también las versiones).
-3. Borrar la pila `segur-alpes-poc` en us-east-1. La llave KMS queda programada para borrarse en 7 días.
+3. Borrar la pila `segur-alpes-poc`. La llave KMS queda programada para borrarse en 7 días.

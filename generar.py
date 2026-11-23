@@ -10,9 +10,9 @@ for marca, f in (("@@VALIDAR@@", "validar.py"), ("@@EMITIR@@", "emitir_url.py"))
     code = (R / "lambdas" / f).read_text()
     assert len(code) < 4096, f
     p = p.replace(marca, indentar(code, 10))
-(R / "dist/1-principal-us-east-1.yaml").write_text(p)
+(R / "dist/1-principal.yaml").write_text(p)
 
-# ---------- generador de carga en sa-east-1 (JSON: sin conflictos con ${} de JavaScript)
+# ---------- generador de carga (JSON: sin conflictos con ${} de JavaScript)
 archivos = {f"/opt/poc/pruebas/{n}": (R / "pruebas" / n).read_text() for n in ("comun.js", "carga.js", "seguridad.js", "generar_archivos.sh")}
 archivos["/opt/poc/correr.sh"] = """#!/bin/bash
 # Uso: sudo /opt/poc/correr.sh individual | pico | seguridad
@@ -44,11 +44,11 @@ assert tamano < 16000, tamano
 
 carga = {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "SegurAlpes PoC - generador de carga k6 en sa-east-1 (simula usuarios en Suramerica). Acceso solo por Session Manager.",
+  "Description": "SegurAlpes PoC - generador de carga k6 en la misma region de la pila principal. Acceso solo por Session Manager.",
   "Parameters": {
     "ApiUrl": {"Type": "String", "Description": "Salida ApiUrl de la pila principal"},
     "ApiKeyValue": {"Type": "String", "NoEcho": True, "MinLength": 20},
-    "TipoInstancia": {"Type": "String", "Default": "c6i.large"},
+    "TipoInstancia": {"Type": "String", "Default": "m7i-flex.large"},
     "Ami": {"Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
             "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"}},
   "Resources": {
@@ -66,5 +66,5 @@ carga = {
       "Tags": [{"Key": "Name", "Value": "segur-alpes-poc-carga"}],
       "UserData": {"Fn::Base64": user_data}}}},
   "Outputs": {"Instancia": {"Value": {"Ref": "Generador"}}}}
-(R / "dist/2-carga-sa-east-1.json").write_text(json.dumps(carga, indent=1, ensure_ascii=False))
+(R / "dist/2-generador-carga.json").write_text(json.dumps(carga, indent=1, ensure_ascii=False))
 print("ok; user data ~", tamano, "bytes")

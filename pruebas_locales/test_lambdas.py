@@ -1,6 +1,6 @@
 import json, os, sys
 import pathlib; _r = pathlib.Path(__file__).parent; sys.path[:0] = [str(_r / "stub"), str(_r.parent / "lambdas")]
-os.environ.update(BUCKET="b-prueba", BUS="bus", VIGENCIA_S="60")
+os.environ.update(BUCKET="b-prueba", BUS="bus", VIGENCIA_S="60", AWS_REGION="us-east-2")
 import boto3, emitir_url, validar
 
 r = emitir_url.handler({"body": json.dumps({"siniestro": "SIN1", "tipo": "image/jpeg"})}, None)

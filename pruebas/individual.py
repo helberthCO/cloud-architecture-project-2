@@ -2,11 +2,14 @@
 """ASR-3 desde la red real del asegurado (por ejemplo, tu portátil en Bogotá). Solo biblioteca estándar.
 Uso: API_URL=... API_KEY=... python3 individual.py [archivo] [repeticiones]"""
 import json, os, statistics, sys, time, urllib.request, uuid
+import http.client, urllib.parse
 
 API, KEY = os.environ["API_URL"], os.environ["API_KEY"]
 ARCHIVO = sys.argv[1] if len(sys.argv) > 1 else "evidencia_5mb.jpg"
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 10
 datos = open(ARCHIVO, "rb").read()
+partes = urllib.parse.urlsplit(API)
+conexion = http.client.HTTPSConnection(partes.netloc, timeout=30)
 
 
 def multipart(campos):
@@ -19,9 +22,9 @@ def multipart(campos):
 url_ms, carga_ms = [], []
 for i in range(N):
     t0 = time.perf_counter()
-    req = urllib.request.Request(API, json.dumps({"siniestro": f"BOG{i}", "tipo": "image/jpeg"}).encode(),
-                                 {"Content-Type": "application/json", "x-api-key": KEY})
-    d = json.load(urllib.request.urlopen(req))
+    conexion.request("POST", partes.path, json.dumps({"siniestro": f"BOG{i}", "tipo": "image/jpeg"}),
+                     {"Content-Type": "application/json", "x-api-key": KEY})
+    d = json.loads(conexion.getresponse().read())
     t1 = time.perf_counter()
     cuerpo, ctype = multipart(d["campos"])
     r = urllib.request.urlopen(urllib.request.Request(d["url"], cuerpo, {"Content-Type": ctype}))

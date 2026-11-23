@@ -1,6 +1,6 @@
 {
  "AWSTemplateFormatVersion": "2010-09-09",
- "Description": "SegurAlpes PoC - generador de carga k6 en sa-east-1 (simula usuarios en Suramerica). Acceso solo por Session Manager.",
+ "Description": "SegurAlpes PoC - generador de carga k6 en la misma region de la pila principal. Acceso solo por Session Manager.",
  "Parameters": {
   "ApiUrl": {
    "Type": "String",
@@ -13,7 +13,7 @@
   },
   "TipoInstancia": {
    "Type": "String",
-   "Default": "c6i.large"
+   "Default": "m7i-flex.large"
   },
   "Ami": {
    "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",

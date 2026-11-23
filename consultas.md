@@ -1,4 +1,4 @@
-# Consultas de CloudWatch Logs Insights (us-east-1)
+# Consultas de CloudWatch Logs Insights (us-east-2)
 
 Ajusta el intervalo de tiempo al de la prueba antes de ejecutar cada consulta.
 

@@ -10,5 +10,5 @@ class _C:
     def put_object_tagging(self, **kw): LLAMADAS.append(("tag", kw["Key"]))
     def copy_object(self, **kw): LLAMADAS.append(("copy", kw["Key"]))
     def delete_object(self, **kw): LLAMADAS.append(("delete", kw["Key"]))
-    def put_entries(self, Entries): LLAMADAS.append(("event", Entries[0]["DetailType"], Entries[0]["Detail"]))
-def client(svc, config=None): return _C(svc)
+    def put_events(self, Entries): LLAMADAS.append(("event", Entries[0]["DetailType"], Entries[0]["Detail"]))
+def client(svc, **kw): return _C(svc)
