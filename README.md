@@ -24,7 +24,7 @@ Los dos dependen de la misma decisión, la carga directa con URL prefirmada (pat
 | Pila | Región | Contenido |
 |---|---|---|
 | `segur-alpes-poc` | us-east-2 | API Gateway REST con llave de API y plan de uso por aliado · Lambda que emite la URL prefirmada POST (60 s de vigencia, tipo de archivo fijo, máximo 10 MB) · S3 cifrado con una llave de AWS KMS, sin acceso público, con versionado y solo TLS · Lambda que valida la firma binaria de cada archivo y publica `DocumentoCargado` o `DocumentoRechazado` en Amazon EventBridge · AWS CloudTrail con eventos de datos del bucket · registros de acceso del servidor de S3 · tablero de Amazon CloudWatch |
-| `segur-alpes-poc-carga` | us-east-2 | Instancia EC2 con k6 que genera la concurrencia (50 usuarios simultáneos). Sin puertos abiertos: acceso por Session Manager. Se apaga sola a las 4 horas |
+| `segur-alpes-poc-carga` | us-east-2 | Instancia EC2 con k6, en una VPC propia, que genera la concurrencia (50 usuarios simultáneos). Sin puertos abiertos: acceso por Session Manager. Se apaga sola a las 4 horas |
 
 La cuenta usa la experiencia nueva de AWS, que asigna una sola región por proyecto (us-east-2) y no permite recursos en otras regiones; por eso las dos pilas van en la misma región, y la distancia de red real se mide con la prueba desde una conexión residencial en Bogotá. El blueprint de la arquitectura usa us-east-1; los servicios son los mismos.
 
@@ -64,7 +64,7 @@ export API_URL=$(aws cloudformation describe-stacks --region us-east-2 --stack-n
 curl -s -X POST "$API_URL" -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"siniestro":"PRUEBA1","tipo":"image/jpeg"}'
 
-# 4. Generador de carga (si no hay VPC por defecto: aws ec2 create-default-vpc --region us-east-2)
+# 4. Generador de carga (crea su propia VPC).
 aws cloudformation deploy --region us-east-2 --stack-name segur-alpes-poc-carga \
   --template-file dist/2-generador-carga.json --capabilities CAPABILITY_IAM \
   --parameter-overrides ApiUrl=$API_URL ApiKeyValue=$API_KEY

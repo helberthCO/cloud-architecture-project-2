@@ -38,4 +38,4 @@ filter ispresent(errorCode)
 | sort eventTime desc
 ```
 
-CloudTrail no registra las solicitudes que fallan la autenticación (firma inválida o ausente). Esas quedan en los registros de acceso del servidor de S3, en el bucket de auditoría, que llegan en unas horas (ver el paso 4 del README).
+CloudTrail registró los 6 intentos no autorizados que llegaron a S3, incluidos los anónimos. Los 2 que rechaza API Gateway (sin llave de API y tipo no permitido) no llegan a S3 y no aparecen aquí. CloudTrail no registra las solicitudes con credenciales inválidas; esas quedan en los registros de acceso del servidor de S3, en el bucket de auditoría, que llegan en unas horas (ver el paso 4 del README).

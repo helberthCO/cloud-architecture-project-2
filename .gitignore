@@ -1,2 +1,21 @@
+# Archivos de prueba generados (5 MB y 11 MB): se crean con pruebas/generar_archivos.sh
+datos/
+*.jpg
+
+# Credenciales y variables locales: nunca se suben
+.env
+env
+*.key
+
+# Salidas crudas de terminal (pueden traer URLs prefirmadas con credenciales temporales)
+salidas/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Instalador de la CLI y archivos del editor y del sistema
+*.pkg
 .idea
 .DS_Store
