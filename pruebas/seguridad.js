@@ -26,9 +26,8 @@ function subir(d, datos, tipo, campos) {
 export default function () {
   const res = [];
   const prueba = (nombre, esperado, r) => {
-    const validos = Array.isArray(esperado) ? esperado : [esperado];
-    const ok = check(r, { [nombre]: (x) => validos.includes(x.status) });
-    res.push(`${ok ? 'OK ' : 'FALLA'}  ${nombre}: esperado ${validos.join(' o ')}, obtenido ${r.status}`);
+    const ok = check(r, { [nombre]: (x) => x.status === esperado });
+    res.push(`${ok ? 'OK ' : 'FALLA'}  ${nombre}: esperado ${esperado}, obtenido ${r.status}`);
   };
 
   // 0. Control: una carga legítima debe funcionar
@@ -52,7 +51,7 @@ export default function () {
   // 5. Archivo más grande que el límite firmado
   prueba('tamaño excedido (11 MB)', 400, subir(pedirUrl('image/jpeg').json(), GRANDE, 'image/jpeg'));
   // 6. Escritura directa sin firma
-  prueba('PUT directo sin firma', [400, 403], http.put(`${host}entrantes/SEG1/directo.jpg`, PEQ, { headers: { 'Content-Type': 'image/jpeg' } }));
+  prueba('PUT directo sin firma', 403, http.put(`${host}entrantes/SEG1/directo.jpg`, PEQ, { headers: { 'Content-Type': 'image/jpeg' } }));
   // 7. Lectura sin firma del archivo legítimo
   prueba('lectura sin firma', 403, http.get(`${host}${llaveSubida}`));
   // 8. Contenido disfrazado: S3 lo acepta, la función debe ponerlo en cuarentena (verificar en los registros)

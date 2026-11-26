@@ -48,33 +48,33 @@ carga = {
   "Parameters": {
     "ApiUrl": {"Type": "String", "Description": "Salida ApiUrl de la pila principal"},
     "ApiKeyValue": {"Type": "String", "NoEcho": True, "MinLength": 20},
-    "TipoInstancia": {"Type": "String", "Default": "m7i-flex.large"},
+    "TipoInstancia": {"Type": "String", "Default": "c6i.large"},
     "Ami": {"Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
             "Default": "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"}},
   "Resources": {
+    "Rol": {"Type": "AWS::IAM::Role", "Properties": {
+      "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
+      "ManagedPolicyArns": ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]}},
+    "Perfil": {"Type": "AWS::IAM::InstanceProfile", "Properties": {"Roles": [{"Ref": "Rol"}]}},
     # Red propia: no depende de que la cuenta tenga VPC por defecto
     "Vpc": {"Type": "AWS::EC2::VPC", "Properties": {"CidrBlock": "10.50.0.0/16", "EnableDnsSupport": True,
-                                                  "EnableDnsHostnames": True, "Tags": [{"Key": "Name", "Value": "segur-alpes-poc-carga"}]}},
+            "EnableDnsHostnames": True, "Tags": [{"Key": "Name", "Value": "segur-alpes-poc-carga"}]}},
     "PuertaInternet": {"Type": "AWS::EC2::InternetGateway"},
     "UnionPuerta": {"Type": "AWS::EC2::VPCGatewayAttachment",
                     "Properties": {"VpcId": {"Ref": "Vpc"}, "InternetGatewayId": {"Ref": "PuertaInternet"}}},
     "Subred": {"Type": "AWS::EC2::Subnet", "Properties": {"VpcId": {"Ref": "Vpc"}, "CidrBlock": "10.50.1.0/24",
-                                                          "MapPublicIpOnLaunch": True, "AvailabilityZone": {"Fn::Select": [0, {"Fn::GetAZs": ""}]}}},
+               "MapPublicIpOnLaunch": True, "AvailabilityZone": {"Fn::Select": [0, {"Fn::GetAZs": ""}]}}},
     "TablaRutas": {"Type": "AWS::EC2::RouteTable", "Properties": {"VpcId": {"Ref": "Vpc"}}},
     "RutaInternet": {"Type": "AWS::EC2::Route", "DependsOn": "UnionPuerta",
                      "Properties": {"RouteTableId": {"Ref": "TablaRutas"}, "DestinationCidrBlock": "0.0.0.0/0",
                                     "GatewayId": {"Ref": "PuertaInternet"}}},
     "AsociacionRutas": {"Type": "AWS::EC2::SubnetRouteTableAssociation",
-                    "Properties": {"SubnetId": {"Ref": "Subred"}, "RouteTableId": {"Ref": "TablaRutas"}}},
-    "Rol": {"Type": "AWS::IAM::Role", "Properties": {
-      "AssumeRolePolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "ec2.amazonaws.com"}, "Action": "sts:AssumeRole"}]},
-      "ManagedPolicyArns": ["arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"]}},
-    "Perfil": {"Type": "AWS::IAM::InstanceProfile", "Properties": {"Roles": [{"Ref": "Rol"}]}},
+                        "Properties": {"SubnetId": {"Ref": "Subred"}, "RouteTableId": {"Ref": "TablaRutas"}}},
     "GrupoSeguridad": {"Type": "AWS::EC2::SecurityGroup", "Properties": {
       "GroupDescription": "Generador de carga: sin entrada, solo salida", "VpcId": {"Ref": "Vpc"},
       "SecurityGroupEgress": [{"IpProtocol": "-1", "CidrIp": "0.0.0.0/0"}]}},
     "Generador": {"Type": "AWS::EC2::Instance", "DependsOn": ["RutaInternet", "AsociacionRutas"], "Properties": {
-        "ImageId": {"Ref": "Ami"}, "InstanceType": {"Ref": "TipoInstancia"}, "SubnetId": {"Ref": "Subred"},
+      "ImageId": {"Ref": "Ami"}, "InstanceType": {"Ref": "TipoInstancia"}, "SubnetId": {"Ref": "Subred"},
       "IamInstanceProfile": {"Ref": "Perfil"}, "SecurityGroupIds": [{"Fn::GetAtt": ["GrupoSeguridad", "GroupId"]}],
       "InstanceInitiatedShutdownBehavior": "stop",
       "Tags": [{"Key": "Name", "Value": "segur-alpes-poc-carga"}],

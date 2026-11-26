@@ -13,7 +13,7 @@
   },
   "TipoInstancia": {
    "Type": "String",
-   "Default": "m7i-flex.large"
+   "Default": "c6i.large"
   },
   "Ami": {
    "Type": "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>",
@@ -21,6 +21,36 @@
   }
  },
  "Resources": {
+  "Rol": {
+   "Type": "AWS::IAM::Role",
+   "Properties": {
+    "AssumeRolePolicyDocument": {
+     "Version": "2012-10-17",
+     "Statement": [
+      {
+       "Effect": "Allow",
+       "Principal": {
+        "Service": "ec2.amazonaws.com"
+       },
+       "Action": "sts:AssumeRole"
+      }
+     ]
+    },
+    "ManagedPolicyArns": [
+     "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+    ]
+   }
+  },
+  "Perfil": {
+   "Type": "AWS::IAM::InstanceProfile",
+   "Properties": {
+    "Roles": [
+     {
+      "Ref": "Rol"
+     }
+    ]
+   }
+  },
   "Vpc": {
    "Type": "AWS::EC2::VPC",
    "Properties": {
@@ -97,36 +127,6 @@
     "RouteTableId": {
      "Ref": "TablaRutas"
     }
-   }
-  },
-  "Rol": {
-   "Type": "AWS::IAM::Role",
-   "Properties": {
-    "AssumeRolePolicyDocument": {
-     "Version": "2012-10-17",
-     "Statement": [
-      {
-       "Effect": "Allow",
-       "Principal": {
-        "Service": "ec2.amazonaws.com"
-       },
-       "Action": "sts:AssumeRole"
-      }
-     ]
-    },
-    "ManagedPolicyArns": [
-     "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-    ]
-   }
-  },
-  "Perfil": {
-   "Type": "AWS::IAM::InstanceProfile",
-   "Properties": {
-    "Roles": [
-     {
-      "Ref": "Rol"
-     }
-    ]
    }
   },
   "GrupoSeguridad": {

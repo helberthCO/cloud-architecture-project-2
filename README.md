@@ -64,7 +64,7 @@ export API_URL=$(aws cloudformation describe-stacks --region us-east-2 --stack-n
 curl -s -X POST "$API_URL" -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
   -d '{"siniestro":"PRUEBA1","tipo":"image/jpeg"}'
 
-# 4. Generador de carga (crea su propia VPC).
+# 4. Generador de carga (crea su propia VPC)
 aws cloudformation deploy --region us-east-2 --stack-name segur-alpes-poc-carga \
   --template-file dist/2-generador-carga.json --capabilities CAPABILITY_IAM \
   --parameter-overrides ApiUrl=$API_URL ApiKeyValue=$API_KEY
@@ -84,7 +84,8 @@ Desde la red del usuario (la medición de la red real):
 
 ```bash
 bash pruebas/generar_archivos.sh ./datos
-API_URL=$API_URL API_KEY=$API_KEY python3 pruebas/individual.py datos/evidencia_5mb.jpg 10
+API_URL=$API_URL API_KEY=$API_KEY python3 pruebas/individual.py datos/evidencia_5mb.jpg 20               # conexión nueva por solicitud
+API_URL=$API_URL API_KEY=$API_KEY python3 pruebas/individual.py datos/evidencia_5mb.jpg 20 --reutilizar # conexión reutilizada, como una app
 ```
 
 La evidencia se recoge en el tablero `segur-alpes-poc` de CloudWatch y con las consultas de `consultas.md`. Los registros de acceso del servidor de S3 llegan al bucket de auditoría en unas horas e incluyen los rechazos por firma inválida, que CloudTrail no registra.
@@ -93,20 +94,42 @@ Pruebas sin AWS: `cd pruebas_locales && python3 test_lambdas.py`.
 
 ## Resultados
 
-| Prueba | URL p95 (meta < 300 ms) | Carga p95 (meta < 3 s) | Fallas | Cumple |
+Pruebas ejecutadas el 22/11/2026 (individual, red real, seguridad y pico con la cuota de 10 ejecuciones simultáneas de Lambda) y el 23/11/2026 (pico de 50 usuarios con la cuota de 1.000), en us-east-2. El análisis completo está en el documento de la Entrega 2.
+
+**ASR-3: carga de evidencias**
+
+| Prueba | Cargas | URL p95 (meta < 300 ms) | Carga p95 (meta < 3 s) | Cumple |
 |---|---|---|---|---|
-| Individual (generador en us-east-2) | — | — | — | — |
-| Pico, 50 usuarios (generador en us-east-2) | — | — | — | — |
-| Red residencial (Bogotá) | — | — | — | — |
+| Individual (generador en us-east-2) | 20 de 20 | 71 ms | 106 ms | Sí |
+| Red residencial en Bogotá, conexión nueva por solicitud | 20 de 20 | 963 ms | 2.151 ms | La URL no |
+| Red residencial en Bogotá, conexión reutilizada | 20 de 20 | 189 ms | 2.226 ms | Sí |
+| Pico, 50 usuarios × 4 cargas (cuota de 1.000) | 200 de 200 | 826 ms | 622 ms | La URL no (arranque en frío) |
+| Pico con la cuota de 10 (10, 5 y 2 usuarios) | 293 de 400 | 26–47 ms | 138–185 ms | No: 6–34 % de rechazos por throttling |
 
 | Medida | Resultado | Cumple |
 |---|---|---|
-| Evento publicado (meta p95 < 10 s) | — | — |
-| Eventos `DocumentoCargado` frente a cargas exitosas | — | — |
-| Intentos no autorizados exitosos (meta 0 de 8) | — | — |
-| Ejecutable disfrazado en cuarentena | — | — |
+| Evento publicado, operación normal (meta p95 < 10 s) | p95 1,7 s | Sí |
+| Evento publicado, pico de 50 usuarios | p95 2,0 s | Sí |
+| Evento publicado, pico con la cuota de 10 | p95 22,9 s | No |
+| Eventos `DocumentoCargado` frente a cargas exitosas | 200 de 200 y 293 de 293 | Sí |
 
-Video de la prueba: *pendiente*.
+**ASR-4: intentos no autorizados**
+
+| Medida | Resultado | Cumple |
+|---|---|---|
+| Intentos no autorizados exitosos (meta 0 de 8) | 0 de 8 | Sí |
+| Ejecutable disfrazado de JPEG | En cuarentena, con evento `DocumentoRechazado` | Sí |
+| Intentos registrados | 6 de 6 en CloudTrail; los 2 que rechaza el API Gateway solo como métrica 4XX | Parcial |
+
+**Qué explica los incumplimientos**
+
+- La cuenta nueva tenía una cuota de 10 ejecuciones simultáneas de Lambda, compartida: la función que valida dejaba sin capacidad a la que emite la URL. Con la cuota de 1.000 no hubo rechazos.
+- Con 50 usuarios que empiezan a la vez, Lambda crea 50 entornos para la función que emite la URL (≈ 0,5 s de arranque cada uno); ya iniciada, firma en 5,3 ms (p95). Se mitiga con concurrencia aprovisionada; en la arquitectura completa, con réplicas mínimas del servicio de documentos.
+- Desde Bogotá, el saludo TLS a Ohio suma cerca de 300 ms cuando la conexión no se reutiliza.
+
+**Corrección durante la prueba.** La primera versión de `lambdas/validar.py` llamaba a `put_entries`, un método que no existe en el cliente de EventBridge; el correcto es `put_events`. Las pruebas locales no lo detectaron porque el doble de prueba tenía el mismo error. Se corrigió en la función desplegada en AWS y en este repositorio, junto con el doble de prueba, que ahora solo expone los métodos reales del SDK. Todas las medidas de eventos son posteriores a la corrección.
+
+Video de la prueba: https://youtu.be/snSUJYZ4RIs
 
 ## Borrar todo
 
